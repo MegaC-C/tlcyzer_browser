@@ -20,20 +20,48 @@ Nach Hauk et al., *Sci Rep* **12**, 13433 (2022), doi:10.1038/s41598-022-17527-y
 | Plattenerkennung | Ecken manuell oder per Helligkeitsschwelle vorgeschlagen (Original: Hough-Transformation) |
 | Entzerrung | Homographie aus 4 Punkten, bilineare Abtastung |
 | Graustufen | `Y = 0.2126R + 0.7152G + 0.0722B` auf linearisiertem sRGB |
-| Beleuchtungsmodell | 2D-Polynom 4. Grades, 15 Koeffizienten, kleinste Quadrate auf 1/4-Auflösung |
-| Segmentierung | Schwellwert auf dem Residuum, Connected Components (8er-Nachbarschaft), Filter nach Fläche und Seitenverhältnis |
+| Beleuchtungsmodell | 2D-Polynom 4. Grades, 15 Koeffizienten, kleinste Quadrate auf jedem 16. Pixel |
+| Segmentierung | Schwellwert auf dem Residuum, morphologisches Öffnen, Connected Components, Filter nach Fläche und Seitenverhältnis |
 | Fleckmitte | intensitätsgewichteter Schwerpunkt |
+| Radius | größter Abstand vom Schwerpunkt zu einem Fleckpixel, plus 12 % |
 | Integral | Summe der obersten 15 % der Pixelwerte im Kreis |
 | Quantifizierung | lineare Regression Integral → Prozent über die Referenzflecken |
 
-### Bewusste Abweichungen
+Die Termreihenfolge des Polynoms entspricht Gleichung (2) der Publikation, die Feldnamen im
+JSON-Export (`agentName`, `x`, `y`, `radius`, `integrationValue`, `percentage`) denen der
+Original-App. Das Paper verlangt ausdrücklich **lineare** RGB-Kanäle für die Graustufen; das ist
+hier so umgesetzt, während die Original-App auf gammabehafteten Werten rechnet.
 
-* **Schwelle.** Das Paper schwellt am Mittelwert des Residuums. Da der Mittelwert der Kleinste-Quadrate-Residuen
-  konstruktionsbedingt bei null liegt, wird hier `Mittel + k·σ` mit einstellbarem `k` (Vorgabe 2,0) verwendet.
-  Auf das Integral wirkt sich das kaum aus, weil ohnehin nur die obersten 15 % der Pixel summiert werden.
-* **Robuster Hintergrund (optional, aus).** Zweiter Fit unter Ausschluss der Fleckpixel. Genauer, aber nicht Teil
-  der validierten Originalkette — für Vergleichbarkeit mit der Publikation ausgeschaltet lassen.
-* **Koordinaten** sind auf [−1, 1] normiert (numerisch stabiler, mathematisch dasselbe Modell).
+### Schwellwert
+
+Das Paper schwellt am Mittelwert des hintergrundbereinigten Bildes. Dessen Rust-Umsetzung rechnet in
+`u8` und schneidet die Subtraktion bei null ab, wodurch der Mittelwert zwischen Untergrund und Fleck
+zu liegen kommt. Beide Regeln stehen zur Wahl:
+
+* **Mittel + k·σ** (Vorgabe, `k = 2,0`) — arbeitet unabhängig vom Rauschniveau des Untergrunds.
+* **Mittelwert (wie Paper)** — dieselbe Regel wie in der Publikation, mit dem Schnitt bei null vor
+  der Mittelwertbildung.
+
+Die Vorgabe fiel auf `k·σ`, weil die Paper-Regel bei rauscharmem Untergrund kippt: Dort liegt der
+Mittelwert weit unter dem Fleckniveau, die Schwelle erfasst dann einen großen Teil der Platte und
+die Flecken verschmelzen. In einer Testreihe über mehrere Rauschniveaus lieferte `k·σ` durchgehend
+die richtige Fleckzahl und Abweichungen von 0,3 bis 3,7 Prozentpunkten, die Paper-Regel 3,0 bis 4,9
+Prozentpunkte und auf der rauschfreien Platte gar kein verwertbares Ergebnis.
+
+### Weitere bewusste Abweichungen
+
+* **Morphologisches Öffnen.** Wie im Original, Radius standardmäßig 0,75 % der größten Bildkante,
+  einstellbar. Entfernt Rauschinseln und trennt schwach verbundene Flecken.
+* **Robuster Hintergrund (optional, aus).** Zweiter Fit unter Ausschluss der Fleckpixel; im Test
+  sinkt der Fehler des Beleuchtungsmodells dadurch um etwa den Faktor 4. Nicht Teil der validierten
+  Originalkette — für Vergleichbarkeit mit der Publikation ausgeschaltet lassen.
+* **Koordinaten** sind auf [−1, 1] normiert. Mathematisch dasselbe Modell, numerisch erheblich
+  gutartiger: Die Spanne der Diagonalelemente im 15×15-System sinkt von rund 10²⁴ auf 25.
+* **Connected Components** mit 8er-Nachbarschaft (Original: 4er).
+* **Fleckradius** deckt den ganzen Fleck ab, wie im Paper beschrieben. Die Original-App nimmt
+  stattdessen den kleinsten Abstand zur Bounding-Box-Ecke und damit einen kleineren Kreis.
+* **Integration** über den Kreis, wie im Paper. Die Original-App integriert über das umschließende
+  Quadrat.
 * Randberührende Komponenten (Plattenkante, Bleistiftmarkierungen) werden verworfen.
 
 ## Hosting
@@ -43,9 +71,6 @@ Alles ist statisch, es genügt ein beliebiger Static-Host.
 **GitHub Pages**
 
 ```bash
-git init && git add . && git commit -m "TLCyzer Web"
-git branch -M main
-git remote add origin git@github.com:<nutzer>/<repo>.git
 git push -u origin main
 ```
 
@@ -55,12 +80,15 @@ Alle Pfade sind relativ, ein Unterverzeichnis ist also kein Problem.
 
 Gleichwertig kostenlos: Cloudflare Pages, Netlify, Vercel, Codeberg Pages, GitLab Pages.
 
+Nach einer Änderung an den ausgelieferten Dateien die Version in `sw.js` (`CACHE`) hochzählen, damit
+die alten Einträge verworfen werden. Seitenaufrufe laufen ohnehin zuerst über das Netz, eine still
+veraltete Fassung sollte damit nicht entstehen.
+
 ## Lizenz
 
 Die Original-App (github.com/TLCyzer/tlcyzer, Kotlin/Rust) steht unter GPL-3.0. Dieser Code ist eine eigenständige
 Neuimplementierung nach der Verfahrensbeschreibung im Open-Access-Paper (CC BY 4.0) und übernimmt keinen Quellcode.
-Um dem Geist des Projekts zu folgen, wird er ebenfalls unter **GPL-3.0** veröffentlicht — bei einer Veröffentlichung
-`LICENSE` ergänzen und die Herkunft der Methode nennen.
+Um dem Geist des Projekts zu folgen, steht er ebenfalls unter **GPL-3.0**; der Lizenztext liegt als `LICENSE` bei.
 
 ## Hinweis
 

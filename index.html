@@ -6,7 +6,11 @@
 <title>TLCyzer Web — quantitative DC-Auswertung im Browser</title>
 <meta name="description" content="Quantitative Auswertung von Dünnschichtchromatogrammen (GPHF-Minilab) direkt im Browser. Läuft offline, keine Daten verlassen das Gerät.">
 <meta name="theme-color" content="#12141a">
+<meta name="color-scheme" content="dark">
 <link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="icon" href="icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
   :root{
     /* Palette aus dem Gegenstand: lichtdichte Box, 254-nm-Lampe, F254-Fluoreszenz */
@@ -75,6 +79,7 @@
   .filebtn input{display:none}
   label.fld{display:inline-flex;flex-direction:column;gap:5px;font:600 11px/1 var(--mono);
     letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  label.fld[hidden]{display:none}   /* sonst gewinnt die display-Regel gegen das hidden-Attribut */
   input[type=text],input[type=number],select{
     font:14px var(--mono);color:var(--text);background:var(--panel);
     border:1px solid var(--rule);border-radius:4px;padding:8px 9px
@@ -195,11 +200,20 @@
   </div></div>
 
   <div class="row" style="margin-bottom:4px">
-    <label class="fld">Schwelle&nbsp;(Mittel + k·σ)
+    <label class="fld">Schwelle
+      <select id="thrMode" title="Mittel + k·σ arbeitet auf rauscharmen Platten zuverlässiger; die Paper-Regel ist die wörtliche Umsetzung der Publikation.">
+        <option value="sigma" selected>Mittel + k·σ</option>
+        <option value="paper">Mittelwert (wie Paper)</option>
+      </select>
+    </label>
+    <label class="fld" id="wrapK">k
       <span class="row"><input type="range" id="thr" min="0" max="4" step="0.1" value="2"><b id="thrV" style="font:13px var(--mono)">2.0</b></span>
     </label>
     <label class="fld">Kleinste Fleckfläche
       <span class="row"><input type="range" id="minA" min="10" max="600" step="10" value="60"><b id="minAV" style="font:13px var(--mono)">60</b></span>
+    </label>
+    <label class="fld">Öffnen&nbsp;(Radius)
+      <span class="row"><input type="range" id="open" min="0" max="20" step="1" value="0"><b id="openV" style="font:13px var(--mono)">auto</b></span>
     </label>
     <label class="switch" style="align-self:end;padding-bottom:9px">
       <input type="checkbox" id="robust"> Hintergrund robust fitten (2 Durchläufe)
@@ -279,7 +293,15 @@
 <script>
 "use strict";
 /* =========================================================================
-   TLCyzer Web — Pipeline nach Sci Rep 12:13433 (2022), Abschnitt "TLC imaging application"
+   TLCyzer Web — quantitative Auswertung von Dünnschichtchromatogrammen im Browser
+   Copyright (C) 2026 die Beitragenden dieses Repositoriums
+
+   Freie Software unter der GNU General Public License, Version 3 oder später.
+   Weitergabe und Veränderung sind unter deren Bedingungen erlaubt; es gibt keine
+   Garantie, auch nicht für Marktgängigkeit oder Eignung für einen bestimmten Zweck.
+   Der Lizenztext liegt als LICENSE bei, ansonsten: https://www.gnu.org/licenses/
+   -------------------------------------------------------------------------
+   Pipeline nach Sci Rep 12:13433 (2022), Abschnitt "TLC imaging application"
    1) Ecken → Homographie → Entzerrung
    2) Graustufen Y = 0.2126R + 0.7152G + 0.0722B (linearisiert)
    3) Beleuchtung: 2D-Polynom 4. Grades, 15 Koeffizienten, auf 1/4-Auflösung gefittet
@@ -294,6 +316,7 @@ const S = {
   corners:null, drag:-1,
   W:0, H:0, warpCv:null,             // entzerrt
   gray:null, fit:null, resid:null,   // Float32Array, Länge W*H
+  mask:null,                         // Uint8Array, Ergebnis von Schwelle + Öffnen
   spots:[], sel:-1, addMode:false,
   reg:null
 };
@@ -345,6 +368,7 @@ async function loadFile(file){
   cv.width = Math.round(bmp.width*sc); cv.height = Math.round(bmp.height*sc);
   cv.getContext('2d').drawImage(bmp,0,0,cv.width,cv.height);
   S.src = cv; S.srcW = cv.width; S.srcH = cv.height;
+  S.spots = []; S.sel = -1; S.reg = null;
   resetCorners();
   $('#s2').hidden = false; $('#s3').hidden = true; $('#s4').hidden = true;
   drawCorners(); msg('m1','');
@@ -420,9 +444,9 @@ function autoCorners(){
     if (a<tl.s) tl={s:a,x,y}; if (a>br.s) br={s:a,x,y};
     if (b>tr.s) tr={s:b,x,y}; if (b<bl.s) bl={s:b,x,y};
   }
-  if (tl.x===undefined) return;
+  if (tl.x===undefined){ msg('m1','Keine helle Fläche gefunden — die Ecken bitte von Hand setzen.'); return; }
   S.corners = [{x:tl.x,y:tl.y},{x:tr.x,y:tr.y},{x:br.x,y:br.y},{x:bl.x,y:bl.y}];
-  drawCorners();
+  msg('m1',''); drawCorners();
 }
 
 /* ---------- Entzerren ---------- */
@@ -493,16 +517,79 @@ function fitBackground(mask){
   return true;
 }
 
+/* ---------- Schwellwert ----------
+   Paper: t(v) = 1 für v ≥ µ_I, wobei µ_I der Mittelwert des hintergrundbereinigten Bildes ist.
+   Das Original rechnet in u8 und schneidet die Subtraktion bei null ab (saturating_sub), µ_I liegt
+   dadurch zwischen Untergrund und Fleck. Hier wird derselbe Schnitt vor der Mittelwertbildung
+   ausgeführt — damit ist die Regel des Papers ohne freien Parameter reproduziert.
+   Alternative „Mittel + k·σ" bleibt für schwach belichtete Platten wählbar. */
+function threshValue(){
+  const r = S.resid, n = r.length;
+  if ($('#thrMode').value === 'sigma'){
+    let m=0; for(let i=0;i<n;i++) m+=r[i]; m/=n;
+    let v=0; for(let i=0;i<n;i++){ const d=r[i]-m; v+=d*d; } v=Math.sqrt(v/n);
+    return m + parseFloat($('#thr').value)*v;
+  }
+  let m=0; for(let i=0;i<n;i++) if (r[i]>0) m+=r[i];
+  return m/n;
+}
+function threshMask(t){
+  const r = S.resid, n = r.length, mask = new Uint8Array(n);
+  for (let i=0;i<n;i++) mask[i] = r[i]>=t ? 1 : 0;
+  return mask;
+}
+/* Morphologisches Öffnen mit quadratischem Element (L∞), separabel über eine gleitende Summe.
+   Entfernt Rauschinseln und trennt schwach verbundene Flecken — im Original imageproc::morphology::open
+   mit Radius 0.75 % der größten Bildkante. */
+function morphPass(src, W, H, r, erode){
+  const tmp = new Uint8Array(W*H), out = new Uint8Array(W*H);
+  for (let y=0;y<H;y++){
+    const row=y*W; let sum=0;
+    for (let x=0;x<=r && x<W;x++) sum+=src[row+x];
+    for (let x=0;x<W;x++){
+      const n = Math.min(W-1,x+r)-Math.max(0,x-r)+1;
+      tmp[row+x] = erode ? (sum===n?1:0) : (sum>0?1:0);
+      const add=x+r+1, rem=x-r;
+      if (add<W) sum+=src[row+add];
+      if (rem>=0) sum-=src[row+rem];
+    }
+  }
+  for (let x=0;x<W;x++){
+    let sum=0;
+    for (let y=0;y<=r && y<H;y++) sum+=tmp[y*W+x];
+    for (let y=0;y<H;y++){
+      const n = Math.min(H-1,y+r)-Math.max(0,y-r)+1;
+      out[y*W+x] = erode ? (sum===n?1:0) : (sum>0?1:0);
+      const add=y+r+1, rem=y-r;
+      if (add<H) sum+=tmp[add*W+x];
+      if (rem>=0) sum-=tmp[rem*W+x];
+    }
+  }
+  return out;
+}
+function morphOpen(mask, W, H, r){
+  if (r<1) return mask;
+  return morphPass(morphPass(mask, W, H, r, true), W, H, r, false);
+}
+function openRadius(){
+  const v = parseInt($('#open').value,10);
+  return v>0 ? v : Math.round(Math.max(S.W,S.H)*0.0075);   // Voreinstellung wie im Original
+}
+/* Maske für die aktuelle Einstellung, Ergebnis wird für Vorschau und Erkennung gemeinsam genutzt. */
+function buildMask(){
+  S.mask = morphOpen(threshMask(threshValue()), S.W, S.H, openRadius());
+  return S.mask;
+}
+
 /* ---------- Flecken finden ---------- */
 function detect(){
   const {W,H} = S;
-  if (!fitBackground(null)) { msg('m3','Hintergrund konnte nicht gefittet werden.'); return; }
+  if (!fitBackground(null)) { msg('m3','Hintergrund konnte nicht gefittet werden — bitte Zuschnitt prüfen.'); return false; }
   if ($('#robust').checked){
-    const m0 = threshMask(2.5);
-    fitBackground(m0);            // zweiter Durchlauf ohne Fleckpixel
+    const m0 = threshMask(threshValue());
+    if (!fitBackground(m0)) { msg('m3','Robuster Hintergrund-Fit fehlgeschlagen.'); return false; }
   }
-  const k = parseFloat($('#thr').value);
-  const mask = threshMask(k);
+  const mask = buildMask();
   const minA = parseInt($('#minA').value,10), maxA = W*H/4;
 
   const lab = new Int32Array(W*H).fill(-1);
@@ -531,19 +618,35 @@ function detect(){
     comps.push({cx, cy, r:Math.max(4, r*1.12)});
   }
   comps.sort((a,b)=>a.cx-b.cx);
+  const prev = S.spots;
   S.spots = comps.map((c,i)=>({id:i+1, cx:c.cx, cy:c.cy, r:c.r, kind:'sample', pct:null, res:null, I:0}));
+  carryOver(prev, S.spots);
   S.spots.forEach(integrate);
   S.sel = -1;
+  invalidate();
   msg('m3', S.spots.length ? '' : 'Keine Flecken erkannt — Schwelle senken oder Flecken von Hand setzen.');
+  return true;
 }
-function threshMask(k){
-  const r = S.resid, n = r.length;
-  let m=0; for(let i=0;i<n;i++) m+=r[i]; m/=n;
-  let v=0; for(let i=0;i<n;i++){ const d=r[i]-m; v+=d*d; } v=Math.sqrt(v/n);
-  const t = m + k*v;
-  const mask = new Uint8Array(n);
-  for (let i=0;i<n;i++) mask[i] = r[i]>=t ? 1 : 0;
-  return mask;
+/* Rollen und Sollwerte über eine Neuerkennung retten: jeder markierte Fleck wandert auf den
+   nächstgelegenen neuen Fleck, sofern dieser nahe genug liegt. Sonst müsste der Anwender die
+   Referenzen nach jedem Schieben eines Reglers neu setzen. */
+function carryOver(prev, next){
+  if (!prev || !prev.length || !next.length) return;
+  const taken = new Set();
+  prev.filter(p=>p.kind!=='sample').forEach(p=>{
+    let best=-1, bd=1e9;
+    next.forEach((n,i)=>{ if(taken.has(i)) return; const d=Math.hypot(n.cx-p.cx,n.cy-p.cy); if(d<bd){bd=d;best=i;} });
+    if (best>=0 && bd <= Math.max(next[best].r, p.r)*1.5){
+      next[best].kind = p.kind; next[best].pct = p.pct; taken.add(best);
+    }
+  });
+}
+/* Jede Änderung an Bild, Flecken oder Parametern macht ein vorhandenes Ergebnis ungültig.
+   Ohne das bliebe Schritt 4 mit Zahlen stehen, die nicht mehr zu den angezeigten Flecken gehören. */
+function invalidate(){
+  S.reg = null;
+  S.spots.forEach(s=>s.res=null);
+  $('#s4').hidden = true;
 }
 /* Integral: Summe der obersten 15 % der Pixel im Kreis (Sci Rep, Methods) */
 function integrate(sp){
@@ -588,7 +691,7 @@ cvS.addEventListener('pointerdown', e=>{
     const r = rs.length ? rs[rs.length>>1] : Math.max(8, S.W/60);
     const sp = {id:0, cx:p.x, cy:p.y, r, kind:'sample', pct:null, res:null, I:0};
     integrate(sp); S.spots.push(sp); renumber(); S.sel = S.spots.indexOf(sp);
-    setAdd(false); drawSpots(); table();
+    setAdd(false); invalidate(); drawSpots(); table();
     return;
   }
   let best=-1,bd=1e9;
@@ -599,8 +702,8 @@ cvS.addEventListener('pointerdown', e=>{
 function renumber(){ S.spots.sort((a,b)=>a.cx-b.cx); S.spots.forEach((s,i)=>s.id=i+1); }
 function setAdd(v){ S.addMode=v; $('#btnAdd').classList.toggle('on',v); cvS.style.cursor = v?'copy':'crosshair'; }
 $('#btnAdd').onclick = ()=>setAdd(!S.addMode);
-$('#btnDel').onclick = ()=>{ if(S.sel<0) return; S.spots.splice(S.sel,1); S.sel=-1; renumber(); drawSpots(); table(); };
-$('#rad').oninput = e=>{ if(S.sel<0) return; const sp=S.spots[S.sel]; sp.r=+e.target.value; integrate(sp); drawSpots(); table(); };
+$('#btnDel').onclick = ()=>{ if(S.sel<0) return; S.spots.splice(S.sel,1); S.sel=-1; renumber(); invalidate(); drawSpots(); table(); };
+$('#rad').oninput = e=>{ if(S.sel<0) return; const sp=S.spots[S.sel]; sp.r=+e.target.value; integrate(sp); invalidate(); drawSpots(); table(); };
 function syncRadius(){
   const el=$('#rad');
   if (S.sel<0){ el.disabled=true; return; }
@@ -614,7 +717,25 @@ document.addEventListener('keydown', e=>{
 });
 $('#thr').oninput = e=>{ $('#thrV').textContent=(+e.target.value).toFixed(1); };
 $('#minA').oninput = e=>{ $('#minAV').textContent=e.target.value; };
-$('#thr').onchange = $('#minA').onchange = $('#robust').onchange = ()=>{ detect(); thumbs(); drawSpots(); table(); };
+$('#open').oninput = e=>{ $('#openV').textContent = +e.target.value>0 ? e.target.value : 'auto'; };
+$('#thrMode').onchange = ()=>{ $('#wrapK').hidden = $('#thrMode').value!=='sigma'; rerun(); };
+$('#thr').onchange = $('#minA').onchange = $('#open').onchange = $('#robust').onchange = rerun;
+
+/* Die Pipeline läuft synchron und braucht auf einem Telefon einige Sekunden. Vor dem Rechnen
+   werden zwei Frames abgewartet, damit die Meldung sichtbar wird und die Oberfläche nicht
+   scheinbar grundlos einfriert. */
+async function busy(text, fn){
+  msg('m3', text);
+  const wrap = $('.wrap'); if (wrap) wrap.style.cursor = 'progress';
+  await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+  try { return fn(); } finally { if (wrap) wrap.style.cursor=''; }
+}
+async function rerun(){
+  await busy('Flecken werden neu gesucht …', ()=>{
+    if (!detect()) return;
+    thumbs(); drawSpots(); table(); syncRadius();
+  });
+}
 $('#btnPreset').onclick = ()=>{
   /* Muster aus den Test-Bildern des Projekts: Referenzen links, Mitte, rechts = 60 / 80 / 100 % */
   const n=S.spots.length;
@@ -622,7 +743,7 @@ $('#btnPreset').onclick = ()=>{
   S.spots.forEach(s=>{ s.kind='sample'; s.pct=null; });
   const idx=[0, (n-1)>>1, n-1], pv=[60,80,100];
   idx.forEach((k,i)=>{ S.spots[k].kind='ref'; S.spots[k].pct=pv[i]; });
-  drawSpots(); table(); msg('m3','');
+  invalidate(); drawSpots(); table(); msg('m3','');
 };
 
 /* ---------- Tabelle ---------- */
@@ -651,11 +772,11 @@ function table(){
   tb.querySelectorAll('select.k').forEach(el=>el.onchange=e=>{
     const sp=S.spots[+e.target.dataset.i]; sp.kind=e.target.value;
     if (sp.kind!=='ref') sp.pct=null;
-    drawSpots(); table();
+    invalidate(); drawSpots(); table();
   });
   tb.querySelectorAll('input.p').forEach(el=>el.onchange=e=>{
     const v=parseFloat(e.target.value); S.spots[+e.target.dataset.i].pct = isNaN(v)?null:v;
-    drawSpots();
+    invalidate(); drawSpots();
   });
 }
 
@@ -666,7 +787,7 @@ function thumbs(){
     c.width=S.srcW*sc; c.height=S.srcH*sc; c.getContext('2d').drawImage(S.src,0,0,c.width,c.height); return c; });
   put('#t1', ()=>S.warpCv);
   put('#t2', ()=>field(S.fit));
-  put('#t3', ()=>{ const m=threshMask(parseFloat($('#thr').value));
+  put('#t3', ()=>{ const m=S.mask;
     const c=document.createElement('canvas'); c.width=W;c.height=H;
     const im=new ImageData(W,H);
     for(let i=0;i<W*H;i++){ const v=m[i]?0:22, o=i*4;
@@ -761,14 +882,24 @@ function dl(name, blob){
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
   a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
 }
-function stamp(){ return new Date().toISOString().replace(/[:.]/g,'-').slice(0,19); }
+function stamp(){
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
 $('#btnJson').onclick = ()=>{
   const o = {
     agentName: $('#name').value || 'unbenannt',
     createdAt: new Date().toISOString(),
     method: 'TLCyzer Web, Pipeline nach doi:10.1038/s41598-022-17527-y',
     image: {width:S.W, height:S.H},
-    settings: {thresholdK:+$('#thr').value, minArea:+$('#minA').value, robustBackground:$('#robust').checked},
+    settings: {
+      thresholdMode: $('#thrMode').value,          // 'paper' = Mittelwert, 'sigma' = Mittel + k·σ
+      thresholdK: $('#thrMode').value==='sigma' ? +$('#thr').value : null,
+      thresholdValue: S.resid ? +threshValue().toFixed(4) : null,
+      openingRadius: openRadius(),
+      minArea: +$('#minA').value,
+      robustBackground: $('#robust').checked
+    },
     calibration: S.reg,
     spots: S.spots.map(s=>({lane:s.id, role:s.kind, nominalPercent:s.pct,
       x:+s.cx.toFixed(2), y:+s.cy.toFixed(2), radius:+s.r.toFixed(2),
@@ -777,20 +908,29 @@ $('#btnJson').onclick = ()=>{
   dl(`tlcyzer_${stamp()}.json`, new Blob([JSON.stringify(o,null,2)],{type:'application/json'}));
 };
 $('#btnCsv').onclick = ()=>{
+  /* Semikolon als Trenner und Komma als Dezimalzeichen: so liest eine deutschsprachige
+     Tabellenkalkulation die Spalten direkt als Zahlen statt als Text. */
+  const num = v => v==null||v==='' ? '' : String(v).replace('.', ',');
   const rows = [['Bahn','Rolle','Soll_%','Integral','x','y','r','Ergebnis_%']];
-  S.spots.forEach(s=>rows.push([s.id,s.kind,s.pct??'',s.I.toFixed(4),s.cx.toFixed(1),s.cy.toFixed(1),s.r.toFixed(1),s.res==null?'':s.res.toFixed(4)]));
-  dl(`tlcyzer_${stamp()}.csv`, new Blob([rows.map(r=>r.join(';')).join('\n')],{type:'text/csv'}));
+  S.spots.forEach(s=>rows.push([s.id, s.kind, num(s.pct??''), num(s.I.toFixed(4)),
+    num(s.cx.toFixed(1)), num(s.cy.toFixed(1)), num(s.r.toFixed(1)),
+    s.res==null?'':num(s.res.toFixed(4))]));
+  dl(`tlcyzer_${stamp()}.csv`, new Blob(['﻿'+rows.map(r=>r.join(';')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
 };
 $('#btnPng').onclick = ()=>S.warpCv.toBlob(b=>dl(`tlcyzer_${stamp()}.png`, b));
 
 /* ---------- Ablauf ---------- */
 $('#file').onchange = e=>loadFile(e.target.files[0]);
 $('#cam').onchange  = e=>loadFile(e.target.files[0]);
-$('#btnWarp').onclick = ()=>{
-  if (!warp()) return;
-  detect(); thumbs(); drawSpots(); table(); syncRadius();
-  $('#s3').hidden=false; $('#s4').hidden=true;
-  $('#s3').scrollIntoView({behavior:'smooth',block:'start'});
+$('#btnWarp').onclick = async ()=>{
+  await busy('Platte wird entzerrt und ausgewertet …', ()=>{
+    S.spots = [];                        // neuer Zuschnitt heißt neue Geometrie
+    if (!warp()) return;
+    if (!detect()) return;
+    thumbs(); drawSpots(); table(); syncRadius();
+    $('#s3').hidden=false;
+    $('#s3').scrollIntoView({behavior:'smooth',block:'start'});
+  });
 };
 
 /* Offlinebetrieb, sofern über http(s) ausgeliefert */
