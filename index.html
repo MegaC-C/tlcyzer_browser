@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TLCyzer Web — quantitative DC-Auswertung im Browser</title>
+<meta name="description" content="Quantitative Auswertung von Dünnschichtchromatogrammen (GPHF-Minilab) direkt im Browser. Läuft offline, keine Daten verlassen das Gerät.">
+<meta name="theme-color" content="#12141a">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  :root{
+    /* Palette aus dem Gegenstand: lichtdichte Box, 254-nm-Lampe, F254-Fluoreszenz */
+    --box:#12141a;          /* Inneres der Fotobox */
+    --panel:#191c24;
+    --panel-2:#1f232d;
+    --rule:#2b303c;
+    --text:#e7eaf0;
+    --muted:#8d95a5;
+    --uv:#8b6cf6;           /* UV-Lampe, 254 nm */
+    --phos:#9fe870;         /* Fluoreszenz des Indikators */
+    --warn:#f0a35e;
+    --bad:#ef6f63;
+    --mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--box); color:var(--text); font-family:var(--sans);
+    font-size:15px; line-height:1.55; -webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:1060px;margin:0 auto;padding:0 18px 96px}
+
+  /* ---------- Kopf ---------- */
+  header{padding:38px 0 26px;border-bottom:1px solid var(--rule);margin-bottom:26px}
+  .eyebrow{
+    font:600 11px/1 var(--mono); letter-spacing:.18em; text-transform:uppercase;
+    color:var(--uv); margin:0 0 14px;
+  }
+  h1{
+    margin:0; font-size:clamp(30px,6vw,46px); line-height:1.02;
+    font-weight:800; letter-spacing:-.025em;
+  }
+  h1 em{font-style:normal;color:var(--phos)}
+  .lede{margin:12px 0 0;max-width:56ch;color:var(--muted)}
+  .lede b{color:var(--text);font-weight:600}
+
+  /* ---------- Schritte ---------- */
+  section.step{border-top:1px solid var(--rule);padding:26px 0 8px;margin-top:8px}
+  section.step[hidden]{display:none}
+  .step-head{display:flex;align-items:baseline;gap:12px;margin-bottom:16px}
+  .num{
+    font:700 11px/1 var(--mono);letter-spacing:.14em;color:var(--muted);
+    border:1px solid var(--rule);border-radius:3px;padding:5px 7px;flex:none
+  }
+  .step h2{margin:0;font-size:19px;font-weight:700;letter-spacing:-.01em}
+  .step .hint{margin:0;color:var(--muted);font-size:13.5px}
+
+  /* ---------- Bedienelemente ---------- */
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  button,.filebtn{
+    font:600 13.5px var(--sans); color:var(--text);
+    background:var(--panel-2); border:1px solid var(--rule); border-radius:4px;
+    padding:9px 14px; cursor:pointer; display:inline-flex; align-items:center; gap:8px;
+  }
+  button:hover,.filebtn:hover{border-color:#3d4453;background:#252a35}
+  button:focus-visible,.filebtn:focus-visible,input:focus-visible,select:focus-visible{
+    outline:2px solid var(--phos);outline-offset:2px
+  }
+  button.primary{background:var(--phos);color:#0f1409;border-color:var(--phos)}
+  button.primary:hover{background:#b2f188;border-color:#b2f188}
+  button.ghost{background:transparent}
+  button[disabled]{opacity:.4;cursor:not-allowed}
+  button.on{border-color:var(--phos);color:var(--phos)}
+  .filebtn input{display:none}
+  label.fld{display:inline-flex;flex-direction:column;gap:5px;font:600 11px/1 var(--mono);
+    letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  input[type=text],input[type=number],select{
+    font:14px var(--mono);color:var(--text);background:var(--panel);
+    border:1px solid var(--rule);border-radius:4px;padding:8px 9px
+  }
+  input[type=range]{accent-color:var(--phos);width:150px}
+  .switch{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+  .switch input{accent-color:var(--uv)}
+
+  /* ---------- Leinwände ---------- */
+  .canvas-wrap{position:relative;margin:16px 0;background:#0b0d12;
+    border:1px solid var(--rule);border-radius:6px;overflow:hidden}
+  canvas.stage{display:block;width:100%;height:auto;touch-action:none;cursor:crosshair}
+  #loupe{position:absolute;top:10px;right:10px;width:116px;height:116px;border-radius:50%;
+    border:1px solid var(--phos);display:none;background:#000;pointer-events:none}
+
+  /* ---------- Filmstreifen (Signatur) ---------- */
+  .strip{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--rule);
+    border:1px solid var(--rule);border-radius:6px;overflow:hidden;margin:18px 0 4px}
+  .strip figure{margin:0;background:var(--panel);padding:9px}
+  .strip canvas{display:block;width:100%;height:auto;background:#0b0d12;border-radius:2px}
+  .strip figcaption{font:600 10px/1.3 var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:var(--muted);margin-top:7px}
+  .strip figcaption span{color:var(--uv)}
+  @media(max-width:620px){.strip{grid-template-columns:repeat(2,1fr)}}
+
+  /* ---------- Tabelle ---------- */
+  .tbl-wrap{overflow-x:auto;margin:14px 0}
+  table{border-collapse:collapse;width:100%;font:13px var(--mono);min-width:560px}
+  th{font:600 10.5px var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--muted);
+    text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule);white-space:nowrap}
+  td{padding:6px 10px;border-bottom:1px solid #22262f;white-space:nowrap}
+  tr.sel td{background:#232838}
+  tr.ref td:first-child{box-shadow:inset 3px 0 0 var(--uv)}
+  tr.sample td:first-child{box-shadow:inset 3px 0 0 var(--phos)}
+  tr.off{opacity:.42}
+  td select,td input{padding:4px 6px;font-size:12.5px}
+  td input.pct{width:74px}
+  .num-cell{text-align:right;font-variant-numeric:tabular-nums}
+
+  /* ---------- Ergebnis ---------- */
+  .result-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:22px;align-items:start}
+  @media(max-width:760px){.result-grid{grid-template-columns:1fr}}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:10px}
+  .card{background:var(--panel);border:1px solid var(--rule);border-radius:5px;padding:12px 13px}
+  .card .lab{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .card .val{font:700 30px/1.05 var(--mono);margin-top:8px;font-variant-numeric:tabular-nums}
+  .card .val small{font-size:15px;font-weight:600;color:var(--muted)}
+  .card.oos .val{color:var(--bad)}
+  .card.ok .val{color:var(--phos)}
+  .fitbox{background:var(--panel);border:1px solid var(--rule);border-radius:5px;padding:14px}
+  .fitbox svg{display:block;width:100%;height:auto}
+  .stat{display:flex;justify-content:space-between;font:12.5px var(--mono);color:var(--muted);
+    padding:4px 0;border-top:1px solid #22262f}
+  .stat b{color:var(--text);font-weight:600}
+
+  .note{border-left:2px solid var(--uv);padding:2px 0 2px 13px;color:var(--muted);
+    font-size:13px;margin:16px 0}
+  .msg{font:13px var(--mono);color:var(--warn);min-height:1.4em}
+  footer{border-top:1px solid var(--rule);margin-top:44px;padding-top:18px;
+    color:var(--muted);font-size:12.5px}
+  footer a{color:var(--phos)}
+  .kbd{font:11.5px var(--mono);border:1px solid var(--rule);border-radius:3px;padding:1px 5px;color:var(--muted)}
+  @media (prefers-reduced-motion:no-preference){
+    section.step{animation:in .35s ease both}
+    @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Dünnschichtchromatographie · quantitativ · offline</p>
+  <h1>TLCyzer <em>Web</em></h1>
+  <p class="lede">Auswertung von DC-Platten nach dem <b>GPHF-Minilab</b>-Verfahren, komplett im Browser.
+  Foto laden, Platte zuschneiden, Referenzen zuordnen — Gehalt in Prozent.
+  Das Bild wird nirgends hochgeladen, die Rechnung läuft auf diesem Gerät.</p>
+</header>
+
+<!-- 1 -->
+<section class="step" id="s1">
+  <div class="step-head"><span class="num">01</span><div>
+    <h2>Foto der Platte laden</h2>
+    <p class="hint">Aufnahme aus der lichtdichten Box unter UV-Beleuchtung, Platte möglichst formatfüllend.</p>
+  </div></div>
+  <div class="row">
+    <label class="filebtn">📂 Datei wählen<input type="file" id="file" accept="image/*"></label>
+    <label class="filebtn">📷 Kamera<input type="file" id="cam" accept="image/*" capture="environment"></label>
+    <label class="fld">Probenname
+      <input type="text" id="name" placeholder="z. B. Ciprofloxacin 500, Charge 45333" size="30">
+    </label>
+  </div>
+  <p class="msg" id="m1"></p>
+</section>
+
+<!-- 2 -->
+<section class="step" id="s2" hidden>
+  <div class="step-head"><span class="num">02</span><div>
+    <h2>Ecken der Platte setzen</h2>
+    <p class="hint">Die vier Punkte auf die Plattenecken ziehen. Alles außerhalb wird verworfen, die Perspektive wird entzerrt.</p>
+  </div></div>
+  <div class="canvas-wrap">
+    <canvas class="stage" id="cvCorner"></canvas>
+    <canvas id="loupe" width="116" height="116"></canvas>
+  </div>
+  <div class="row">
+    <button id="btnAuto" class="ghost">Ecken automatisch suchen</button>
+    <button id="btnReset" class="ghost">Zurücksetzen</button>
+    <button id="btnWarp" class="primary">Zuschneiden und analysieren →</button>
+  </div>
+</section>
+
+<!-- 3 -->
+<section class="step" id="s3" hidden>
+  <div class="step-head"><span class="num">03</span><div>
+    <h2>Flecken prüfen und Referenzen zuordnen</h2>
+    <p class="hint">Fleck antippen zum Auswählen. Nicht erkannte Flecken lassen sich von Hand setzen, Verunreinigungen entfernen.</p>
+  </div></div>
+
+  <div class="row" style="margin-bottom:4px">
+    <label class="fld">Schwelle&nbsp;(Mittel + k·σ)
+      <span class="row"><input type="range" id="thr" min="0" max="4" step="0.1" value="2"><b id="thrV" style="font:13px var(--mono)">2.0</b></span>
+    </label>
+    <label class="fld">Kleinste Fleckfläche
+      <span class="row"><input type="range" id="minA" min="10" max="600" step="10" value="60"><b id="minAV" style="font:13px var(--mono)">60</b></span>
+    </label>
+    <label class="switch" style="align-self:end;padding-bottom:9px">
+      <input type="checkbox" id="robust"> Hintergrund robust fitten (2 Durchläufe)
+    </label>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas class="stage" id="cvSpots"></canvas>
+  </div>
+
+  <div class="row">
+    <button id="btnAdd" class="ghost">＋ Fleck setzen</button>
+    <button id="btnDel" class="ghost">✕ Ausgewählten löschen</button>
+    <label class="fld" style="margin-left:6px">Radius des ausgewählten Flecks
+      <input type="range" id="rad" min="4" max="90" step="1" value="20" disabled>
+    </label>
+    <button id="btnPreset" class="ghost" title="Referenzen auf Bahn 1, 3, 5">Muster 60/80/100</button>
+  </div>
+
+  <div class="strip" id="strip">
+    <figure><canvas id="t0"></canvas><figcaption><span>a</span> Original</figcaption></figure>
+    <figure><canvas id="t1"></canvas><figcaption><span>b</span> Entzerrt</figcaption></figure>
+    <figure><canvas id="t2"></canvas><figcaption><span>c</span> Hintergrund</figcaption></figure>
+    <figure><canvas id="t3"></canvas><figcaption><span>d</span> Flecken</figcaption></figure>
+  </div>
+
+  <div class="tbl-wrap">
+    <table id="tbl">
+      <thead><tr>
+        <th>Bahn</th><th>Rolle</th><th>Soll&nbsp;%</th><th class="num-cell">Integral</th>
+        <th class="num-cell">x</th><th class="num-cell">y</th><th class="num-cell">r</th><th class="num-cell">Ergebnis</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <p class="msg" id="m3"></p>
+  <div class="row"><button id="btnCalc" class="primary">Gehalt berechnen</button></div>
+</section>
+
+<!-- 4 -->
+<section class="step" id="s4" hidden>
+  <div class="step-head"><span class="num">04</span><div>
+    <h2>Ergebnis</h2>
+    <p class="hint">Anzeige in ganzen Prozent — die Genauigkeit des Verfahrens gibt nicht mehr her. Der Export enthält Nachkommastellen.</p>
+  </div></div>
+  <div class="result-grid">
+    <div>
+      <div class="cards" id="cards"></div>
+      <p class="note" id="verdict"></p>
+      <div class="row">
+        <button id="btnJson" class="ghost">Ergebnis als JSON</button>
+        <button id="btnCsv" class="ghost">Tabelle als CSV</button>
+        <button id="btnPng" class="ghost">Entzerrtes Bild als PNG</button>
+      </div>
+    </div>
+    <div class="fitbox">
+      <div class="lab" style="font:600 10px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Kalibriergerade</div>
+      <svg id="plot" viewBox="0 0 320 210" role="img" aria-label="Kalibriergerade: Integral gegen Sollgehalt"></svg>
+      <div class="stat"><span>Steigung</span><b id="stSlope">—</b></div>
+      <div class="stat"><span>Achsenabschnitt</span><b id="stItc">—</b></div>
+      <div class="stat"><span>R²</span><b id="stR2">—</b></div>
+      <div class="stat"><span>Referenzen</span><b id="stN">—</b></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p><b>Methode</b> nach Hauk, Boss, Gabel, Schäfermann, Lensch &amp; Heide,
+  <i>Sci Rep</i> <b>12</b>, 13433 (2022), <a href="https://doi.org/10.1038/s41598-022-17527-y">doi:10.1038/s41598-022-17527-y</a> (Open Access, CC&nbsp;BY).
+  Eigenständige Neuimplementierung der dort beschriebenen Bildverarbeitung in JavaScript; Original-App (Kotlin/Rust):
+  <a href="https://github.com/TLCyzer/tlcyzer">github.com/TLCyzer/tlcyzer</a>, GPL-3.0.</p>
+  <p>Screening-Werkzeug, kein Arzneibuchverfahren. Auffällige Proben gehören in ein Labor mit kompendialer Analytik.
+  Tasten: <span class="kbd">Entf</span> löscht den ausgewählten Fleck, <span class="kbd">A</span> schaltet den Setzen-Modus.</p>
+</footer>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================
+   TLCyzer Web — Pipeline nach Sci Rep 12:13433 (2022), Abschnitt "TLC imaging application"
+   1) Ecken → Homographie → Entzerrung
+   2) Graustufen Y = 0.2126R + 0.7152G + 0.0722B (linearisiert)
+   3) Beleuchtung: 2D-Polynom 4. Grades, 15 Koeffizienten, auf 1/4-Auflösung gefittet
+   4) Schwellwert + Connected Components + Form-/Größenfilter
+   5) Schwerpunkt intensitätsgewichtet, Integral = Summe der obersten 15 % im Kreis
+   6) Lineare Regression Integral → Prozent anhand der Referenzflecken
+   ========================================================================= */
+
+const $ = s => document.querySelector(s);
+const S = {
+  src:null, srcW:0, srcH:0,          // Quellbild (Canvas)
+  corners:null, drag:-1,
+  W:0, H:0, warpCv:null,             // entzerrt
+  gray:null, fit:null, resid:null,   // Float32Array, Länge W*H
+  spots:[], sel:-1, addMode:false,
+  reg:null
+};
+const LIN = new Float32Array(256);
+for (let i=0;i<256;i++){ const c=i/255; LIN[i] = 255*(c<=0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4)); }
+
+/* ---------- Lineare Algebra ---------- */
+function solveLin(A, b, n){
+  A = Float64Array.from(A); b = Float64Array.from(b);
+  for (let c=0;c<n;c++){
+    let p=c; for (let r=c+1;r<n;r++) if (Math.abs(A[r*n+c])>Math.abs(A[p*n+c])) p=r;
+    if (Math.abs(A[p*n+c]) < 1e-11) return null;
+    if (p!==c){ for(let k=0;k<n;k++){const t=A[c*n+k];A[c*n+k]=A[p*n+k];A[p*n+k]=t;} const t=b[c];b[c]=b[p];b[p]=t; }
+    for (let r=c+1;r<n;r++){
+      const f = A[r*n+c]/A[c*n+c]; if (!f) continue;
+      for (let k=c;k<n;k++) A[r*n+k] -= f*A[c*n+k];
+      b[r] -= f*b[c];
+    }
+  }
+  const x = new Float64Array(n);
+  for (let i=n-1;i>=0;i--){ let s=b[i]; for(let k=i+1;k<n;k++) s-=A[i*n+k]*x[k]; x[i]=s/A[i*n+i]; }
+  return x;
+}
+/* Homographie: from → to (je 4 Punkte {x,y}) */
+function homography(from, to){
+  const A = new Float64Array(64), b = new Float64Array(8);
+  for (let i=0;i<4;i++){
+    const {x,y} = from[i], X = to[i].x, Y = to[i].y;
+    const r1 = (2*i)*8, r2 = (2*i+1)*8;
+    A[r1]=x; A[r1+1]=y; A[r1+2]=1; A[r1+6]=-x*X; A[r1+7]=-y*X; b[2*i]=X;
+    A[r2+3]=x; A[r2+4]=y; A[r2+5]=1; A[r2+6]=-x*Y; A[r2+7]=-y*Y; b[2*i+1]=Y;
+  }
+  const h = solveLin(A,b,8); if (!h) return null;
+  return [h[0],h[1],h[2],h[3],h[4],h[5],h[6],h[7],1];
+}
+function applyH(h,x,y){ const d=h[6]*x+h[7]*y+h[8]; return [(h[0]*x+h[1]*y+h[2])/d,(h[3]*x+h[4]*y+h[5])/d]; }
+
+/* ---------- Bild laden ---------- */
+async function loadFile(file){
+  if (!file) return;
+  msg('m1','Bild wird geladen …');
+  let bmp;
+  try { bmp = await createImageBitmap(file, {imageOrientation:'from-image'}); }
+  catch(e){
+    bmp = await new Promise((res,rej)=>{ const im=new Image(); im.onload=()=>res(im); im.onerror=rej; im.src=URL.createObjectURL(file); });
+  }
+  const MAX = 2400, sc = Math.min(1, MAX/Math.max(bmp.width,bmp.height));
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(bmp.width*sc); cv.height = Math.round(bmp.height*sc);
+  cv.getContext('2d').drawImage(bmp,0,0,cv.width,cv.height);
+  S.src = cv; S.srcW = cv.width; S.srcH = cv.height;
+  resetCorners();
+  $('#s2').hidden = false; $('#s3').hidden = true; $('#s4').hidden = true;
+  drawCorners(); msg('m1','');
+  $('#s2').scrollIntoView({behavior:'smooth', block:'start'});
+}
+function resetCorners(){
+  const w=S.srcW,h=S.srcH,m=0.08;
+  S.corners = [{x:w*m,y:h*m},{x:w*(1-m),y:h*m},{x:w*(1-m),y:h*(1-m)},{x:w*m,y:h*(1-m)}];
+}
+function msg(id,t){ $('#'+id).textContent = t; }
+
+/* ---------- Ecken-Editor ---------- */
+const cvC = $('#cvCorner'), ctxC = cvC.getContext('2d');
+function drawCorners(){
+  const maxW = 1200, sc = Math.min(1, maxW/S.srcW);
+  cvC.width = Math.round(S.srcW*sc); cvC.height = Math.round(S.srcH*sc);
+  ctxC.drawImage(S.src,0,0,cvC.width,cvC.height);
+  const k = cvC.width/S.srcW;
+  ctxC.save();
+  ctxC.strokeStyle = '#9fe870'; ctxC.lineWidth = 2; ctxC.setLineDash([7,5]);
+  ctxC.beginPath();
+  S.corners.forEach((p,i)=>{ const x=p.x*k,y=p.y*k; i?ctxC.lineTo(x,y):ctxC.moveTo(x,y); });
+  ctxC.closePath(); ctxC.stroke(); ctxC.setLineDash([]);
+  S.corners.forEach((p,i)=>{
+    const x=p.x*k,y=p.y*k;
+    ctxC.fillStyle = i===S.drag ? '#9fe870' : 'rgba(139,108,246,.92)';
+    ctxC.beginPath(); ctxC.arc(x,y,11,0,7); ctxC.fill();
+    ctxC.strokeStyle='#0b0d12'; ctxC.lineWidth=2; ctxC.stroke();
+    ctxC.fillStyle='#0b0d12'; ctxC.font='700 11px ui-monospace,monospace';
+    ctxC.textAlign='center'; ctxC.textBaseline='middle'; ctxC.fillText(String(i+1),x,y+.5);
+  });
+  ctxC.restore();
+}
+function evtPos(cv,e){
+  const r = cv.getBoundingClientRect();
+  return { x:(e.clientX-r.left)*cv.width/r.width, y:(e.clientY-r.top)*cv.height/r.height };
+}
+cvC.addEventListener('pointerdown', e=>{
+  const p = evtPos(cvC,e), k = cvC.width/S.srcW;
+  let best=-1, bd=1e9;
+  S.corners.forEach((c,i)=>{ const d=Math.hypot(c.x*k-p.x, c.y*k-p.y); if(d<bd){bd=d;best=i;} });
+  if (bd < 40){ S.drag=best; cvC.setPointerCapture(e.pointerId); moveCorner(e); }
+});
+cvC.addEventListener('pointermove', e=>{ if(S.drag>=0) moveCorner(e); });
+cvC.addEventListener('pointerup', ()=>{ S.drag=-1; $('#loupe').style.display='none'; drawCorners(); });
+cvC.addEventListener('pointercancel', ()=>{ S.drag=-1; $('#loupe').style.display='none'; drawCorners(); });
+function moveCorner(e){
+  const p = evtPos(cvC,e), k = cvC.width/S.srcW;
+  S.corners[S.drag] = { x:Math.max(0,Math.min(S.srcW,p.x/k)), y:Math.max(0,Math.min(S.srcH,p.y/k)) };
+  drawCorners(); loupe(p.x/k, p.y/k);
+}
+function loupe(sx,sy){
+  const l = $('#loupe'), c = l.getContext('2d'), z=4, s=116/z;
+  l.style.display='block'; c.clearRect(0,0,116,116);
+  c.drawImage(S.src, sx-s/2, sy-s/2, s, s, 0,0,116,116);
+  c.strokeStyle='#9fe870'; c.lineWidth=1;
+  c.beginPath(); c.moveTo(58,44); c.lineTo(58,72); c.moveTo(44,58); c.lineTo(72,58); c.stroke();
+}
+$('#btnReset').onclick = ()=>{ resetCorners(); drawCorners(); };
+$('#btnAuto').onclick = autoCorners;
+function autoCorners(){
+  /* helle Plattenfläche gegen dunklen Boxhintergrund: Extrempunkte von x±y */
+  const st = 4, w=S.srcW,h=S.srcH;
+  const d = S.src.getContext('2d').getImageData(0,0,w,h).data;
+  let sum=0,n=0;
+  for (let y=0;y<h;y+=st) for(let x=0;x<w;x+=st){ const i=(y*w+x)*4; sum += (d[i]+d[i+1]+d[i+2])/3; n++; }
+  const thr = sum/n * 1.15;
+  let tl={s:1e9},br={s:-1e9},tr={s:-1e9},bl={s:1e9};
+  for (let y=0;y<h;y+=st) for(let x=0;x<w;x+=st){
+    const i=(y*w+x)*4, v=(d[i]+d[i+1]+d[i+2])/3;
+    if (v<thr) continue;
+    const a=x+y, b=x-y;
+    if (a<tl.s) tl={s:a,x,y}; if (a>br.s) br={s:a,x,y};
+    if (b>tr.s) tr={s:b,x,y}; if (b<bl.s) bl={s:b,x,y};
+  }
+  if (tl.x===undefined) return;
+  S.corners = [{x:tl.x,y:tl.y},{x:tr.x,y:tr.y},{x:br.x,y:br.y},{x:bl.x,y:bl.y}];
+  drawCorners();
+}
+
+/* ---------- Entzerren ---------- */
+function warp(){
+  const c = S.corners;
+  const d = (a,b)=>Math.hypot(a.x-b.x, a.y-b.y);
+  let W = Math.round((d(c[0],c[1])+d(c[3],c[2]))/2);
+  let H = Math.round((d(c[0],c[3])+d(c[1],c[2]))/2);
+  const MAX=1400, sc=Math.min(1, MAX/Math.max(W,H));
+  W = Math.max(60, Math.round(W*sc)); H = Math.max(60, Math.round(H*sc));
+  const dst = [{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}];
+  const h = homography(dst, c);                       // Ziel → Quelle (Rückwärtsabbildung)
+  if (!h) { msg('m3','Die vier Ecken liegen nicht in allgemeiner Lage.'); return false; }
+
+  const sd = S.src.getContext('2d').getImageData(0,0,S.srcW,S.srcH).data;
+  const out = new ImageData(W,H), od = out.data;
+  const sw=S.srcW, sh=S.srcH;
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    const [sx,sy] = applyH(h, x+0.5, y+0.5);
+    const o = (y*W+x)*4;
+    if (sx<0||sy<0||sx>=sw-1||sy>=sh-1){ od[o]=od[o+1]=od[o+2]=0; od[o+3]=255; continue; }
+    const x0=sx|0, y0=sy|0, fx=sx-x0, fy=sy-y0;
+    const i00=(y0*sw+x0)*4, i10=i00+4, i01=i00+sw*4, i11=i01+4;
+    for (let ch=0; ch<3; ch++){
+      od[o+ch] = (sd[i00+ch]*(1-fx)+sd[i10+ch]*fx)*(1-fy) + (sd[i01+ch]*(1-fx)+sd[i11+ch]*fx)*fy;
+    }
+    od[o+3]=255;
+  }
+  const cv = document.createElement('canvas'); cv.width=W; cv.height=H;
+  cv.getContext('2d').putImageData(out,0,0);
+  S.warpCv=cv; S.W=W; S.H=H;
+
+  const g = new Float32Array(W*H);
+  for (let i=0,p=0;i<g.length;i++,p+=4) g[i] = 0.2126*LIN[od[p]] + 0.7152*LIN[od[p+1]] + 0.0722*LIN[od[p+2]];
+  S.gray = g;
+  return true;
+}
+
+/* ---------- Hintergrund: Polynom 4. Grades, 15 Koeffizienten ---------- */
+function terms(x,y,t){
+  const x2=x*x,x3=x2*x,x4=x3*x,y2=y*y,y3=y2*y,y4=y3*y;
+  t[0]=y4; t[1]=x*y3; t[2]=x2*y2; t[3]=x3*y; t[4]=x4;
+  t[5]=y3; t[6]=x*y2; t[7]=x2*y; t[8]=x3;
+  t[9]=y2; t[10]=x*y; t[11]=x2; t[12]=x; t[13]=y; t[14]=1;
+}
+function fitBackground(mask){
+  const {W,H,gray} = S, N=15, step=4;
+  const A = new Float64Array(N*N), b = new Float64Array(N), t = new Float64Array(N);
+  for (let y=0;y<H;y+=step) for (let x=0;x<W;x+=step){
+    const idx=y*W+x; if (mask && mask[idx]) continue;
+    terms((2*x/W)-1, (2*y/H)-1, t);
+    const v = gray[idx];
+    for (let i=0;i<N;i++){ b[i]+=t[i]*v; for(let j=i;j<N;j++) A[i*N+j]+=t[i]*t[j]; }
+  }
+  for (let i=0;i<N;i++) for(let j=0;j<i;j++) A[i*N+j]=A[j*N+i];
+  const co = solveLin(A,b,N);
+  if (!co) return false;
+  const fit = new Float32Array(W*H), resid = new Float32Array(W*H);
+  for (let y=0;y<H;y++){
+    const yn = (2*y/H)-1;
+    for (let x=0;x<W;x++){
+      terms((2*x/W)-1, yn, t);
+      let v=0; for(let i=0;i<N;i++) v+=co[i]*t[i];
+      const idx=y*W+x; fit[idx]=v; resid[idx]=v-gray[idx];   // Fleck = Quenching = positiv
+    }
+  }
+  S.fit=fit; S.resid=resid;
+  return true;
+}
+
+/* ---------- Flecken finden ---------- */
+function detect(){
+  const {W,H} = S;
+  if (!fitBackground(null)) { msg('m3','Hintergrund konnte nicht gefittet werden.'); return; }
+  if ($('#robust').checked){
+    const m0 = threshMask(2.5);
+    fitBackground(m0);            // zweiter Durchlauf ohne Fleckpixel
+  }
+  const k = parseFloat($('#thr').value);
+  const mask = threshMask(k);
+  const minA = parseInt($('#minA').value,10), maxA = W*H/4;
+
+  const lab = new Int32Array(W*H).fill(-1);
+  const stack = new Int32Array(W*H);
+  const comps = [];
+  for (let s=0;s<W*H;s++){
+    if (!mask[s] || lab[s]>=0) continue;
+    let sp=0; stack[sp++]=s; lab[s]=comps.length;
+    let n=0, minx=1e9,maxx=-1,miny=1e9,maxy=-1, sx=0,sy=0,sw=0, px=[];
+    while(sp){
+      const p=stack[--sp], x=p%W, y=(p/W)|0, v=S.resid[p];
+      n++; sx+=x*v; sy+=y*v; sw+=v; px.push(p);
+      if(x<minx)minx=x; if(x>maxx)maxx=x; if(y<miny)miny=y; if(y>maxy)maxy=y;
+      for (let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
+        const nx=x+dx, ny=y+dy;
+        if(nx<0||ny<0||nx>=W||ny>=H) continue;
+        const q=ny*W+nx;
+        if(mask[q] && lab[q]<0){ lab[q]=lab[s]; stack[sp++]=q; }
+      }
+    }
+    const bw=maxx-minx+1, bh=maxy-miny+1, ar=bw/bh;
+    const border = (minx<=1||miny<=1||maxx>=W-2||maxy>=H-2);
+    if (n<minA || n>maxA || ar<0.25 || ar>4 || border) continue;
+    const cx = sw>0 ? sx/sw : (minx+maxx)/2, cy = sw>0 ? sy/sw : (miny+maxy)/2;
+    let r=0; for (const p of px){ const d=Math.hypot(p%W-cx, ((p/W)|0)-cy); if(d>r) r=d; }
+    comps.push({cx, cy, r:Math.max(4, r*1.12)});
+  }
+  comps.sort((a,b)=>a.cx-b.cx);
+  S.spots = comps.map((c,i)=>({id:i+1, cx:c.cx, cy:c.cy, r:c.r, kind:'sample', pct:null, res:null, I:0}));
+  S.spots.forEach(integrate);
+  S.sel = -1;
+  msg('m3', S.spots.length ? '' : 'Keine Flecken erkannt — Schwelle senken oder Flecken von Hand setzen.');
+}
+function threshMask(k){
+  const r = S.resid, n = r.length;
+  let m=0; for(let i=0;i<n;i++) m+=r[i]; m/=n;
+  let v=0; for(let i=0;i<n;i++){ const d=r[i]-m; v+=d*d; } v=Math.sqrt(v/n);
+  const t = m + k*v;
+  const mask = new Uint8Array(n);
+  for (let i=0;i<n;i++) mask[i] = r[i]>=t ? 1 : 0;
+  return mask;
+}
+/* Integral: Summe der obersten 15 % der Pixel im Kreis (Sci Rep, Methods) */
+function integrate(sp){
+  const {W,H,resid} = S;
+  const x0=Math.max(0,Math.floor(sp.cx-sp.r)), x1=Math.min(W-1,Math.ceil(sp.cx+sp.r));
+  const y0=Math.max(0,Math.floor(sp.cy-sp.r)), y1=Math.min(H-1,Math.ceil(sp.cy+sp.r));
+  const vals=[];
+  for (let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    if (Math.hypot(x-sp.cx,y-sp.cy) <= sp.r) vals.push(resid[y*W+x]);
+  }
+  vals.sort((a,b)=>b-a);
+  const take = Math.max(1, Math.ceil(vals.length*0.15));
+  let s=0; for(let i=0;i<take;i++) s+=vals[i];
+  sp.I = s;
+}
+
+/* ---------- Darstellung Schritt 3 ---------- */
+const cvS = $('#cvSpots'), ctxS = cvS.getContext('2d');
+function drawSpots(){
+  cvS.width=S.W; cvS.height=S.H;
+  ctxS.drawImage(S.warpCv,0,0);
+  const f = Math.max(1, S.W/900);
+  S.spots.forEach((sp,i)=>{
+    const col = sp.kind==='ref' ? '#8b6cf6' : sp.kind==='off' ? '#6b7280' : '#9fe870';
+    ctxS.lineWidth = (i===S.sel?3.5:2)*f;
+    ctxS.strokeStyle = col;
+    ctxS.beginPath(); ctxS.arc(sp.cx,sp.cy,sp.r,0,7); ctxS.stroke();
+    if (i===S.sel){ ctxS.setLineDash([4*f,4*f]); ctxS.strokeStyle='#fff';
+      ctxS.beginPath(); ctxS.arc(sp.cx,sp.cy,sp.r+4*f,0,7); ctxS.stroke(); ctxS.setLineDash([]); }
+    const lbl = sp.kind==='ref' && sp.pct!=null ? sp.pct+'%' : String(sp.id);
+    ctxS.font = `700 ${13*f}px ui-monospace,monospace`;
+    ctxS.textAlign='center';
+    const ty = sp.cy - sp.r - 7*f;
+    ctxS.lineWidth=4*f; ctxS.strokeStyle='rgba(0,0,0,.75)'; ctxS.strokeText(lbl, sp.cx, ty);
+    ctxS.fillStyle=col; ctxS.fillText(lbl, sp.cx, ty);
+  });
+}
+cvS.addEventListener('pointerdown', e=>{
+  const p = evtPos(cvS,e);
+  if (S.addMode){
+    const rs = S.spots.map(s=>s.r).sort((a,b)=>a-b);
+    const r = rs.length ? rs[rs.length>>1] : Math.max(8, S.W/60);
+    const sp = {id:0, cx:p.x, cy:p.y, r, kind:'sample', pct:null, res:null, I:0};
+    integrate(sp); S.spots.push(sp); renumber(); S.sel = S.spots.indexOf(sp);
+    setAdd(false); drawSpots(); table();
+    return;
+  }
+  let best=-1,bd=1e9;
+  S.spots.forEach((s,i)=>{ const d=Math.hypot(s.cx-p.x,s.cy-p.y); if(d<bd){bd=d;best=i;} });
+  S.sel = (best>=0 && bd < S.spots[best].r*1.8) ? best : -1;
+  syncRadius(); drawSpots(); table();
+});
+function renumber(){ S.spots.sort((a,b)=>a.cx-b.cx); S.spots.forEach((s,i)=>s.id=i+1); }
+function setAdd(v){ S.addMode=v; $('#btnAdd').classList.toggle('on',v); cvS.style.cursor = v?'copy':'crosshair'; }
+$('#btnAdd').onclick = ()=>setAdd(!S.addMode);
+$('#btnDel').onclick = ()=>{ if(S.sel<0) return; S.spots.splice(S.sel,1); S.sel=-1; renumber(); drawSpots(); table(); };
+$('#rad').oninput = e=>{ if(S.sel<0) return; const sp=S.spots[S.sel]; sp.r=+e.target.value; integrate(sp); drawSpots(); table(); };
+function syncRadius(){
+  const el=$('#rad');
+  if (S.sel<0){ el.disabled=true; return; }
+  el.disabled=false; el.value = Math.round(S.spots[S.sel].r);
+}
+document.addEventListener('keydown', e=>{
+  if ($('#s3').hidden) return;
+  if (e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  if (e.key==='Delete'||e.key==='Backspace'){ $('#btnDel').click(); e.preventDefault(); }
+  if (e.key==='a'||e.key==='A') setAdd(!S.addMode);
+});
+$('#thr').oninput = e=>{ $('#thrV').textContent=(+e.target.value).toFixed(1); };
+$('#minA').oninput = e=>{ $('#minAV').textContent=e.target.value; };
+$('#thr').onchange = $('#minA').onchange = $('#robust').onchange = ()=>{ detect(); thumbs(); drawSpots(); table(); };
+$('#btnPreset').onclick = ()=>{
+  /* Muster aus den Test-Bildern des Projekts: Referenzen links, Mitte, rechts = 60 / 80 / 100 % */
+  const n=S.spots.length;
+  if (n<3){ msg('m3','Für dieses Muster werden mindestens drei Flecken gebraucht.'); return; }
+  S.spots.forEach(s=>{ s.kind='sample'; s.pct=null; });
+  const idx=[0, (n-1)>>1, n-1], pv=[60,80,100];
+  idx.forEach((k,i)=>{ S.spots[k].kind='ref'; S.spots[k].pct=pv[i]; });
+  drawSpots(); table(); msg('m3','');
+};
+
+/* ---------- Tabelle ---------- */
+function table(){
+  const tb = $('#tbl tbody'); tb.innerHTML='';
+  S.spots.forEach((sp,i)=>{
+    const tr=document.createElement('tr');
+    tr.className = sp.kind + (i===S.sel?' sel':'');
+    tr.innerHTML =
+      `<td>${sp.id}</td>
+       <td><select data-i="${i}" class="k">
+         <option value="sample"${sp.kind==='sample'?' selected':''}>Probe</option>
+         <option value="ref"${sp.kind==='ref'?' selected':''}>Referenz</option>
+         <option value="off"${sp.kind==='off'?' selected':''}>ignorieren</option>
+       </select></td>
+       <td>${sp.kind==='ref' ? `<input class="pct p" type="number" step="0.1" data-i="${i}" value="${sp.pct??''}" placeholder="%">` : '—'}</td>
+       <td class="num-cell">${sp.I.toFixed(1)}</td>
+       <td class="num-cell">${sp.cx.toFixed(0)}</td>
+       <td class="num-cell">${sp.cy.toFixed(0)}</td>
+       <td class="num-cell">${sp.r.toFixed(0)}</td>
+       <td class="num-cell">${sp.res==null?'—':sp.res.toFixed(1)+' %'}</td>`;
+    tr.onclick = ev=>{ if(ev.target.tagName==='SELECT'||ev.target.tagName==='INPUT') return;
+      S.sel=i; syncRadius(); drawSpots(); table(); };
+    tb.appendChild(tr);
+  });
+  tb.querySelectorAll('select.k').forEach(el=>el.onchange=e=>{
+    const sp=S.spots[+e.target.dataset.i]; sp.kind=e.target.value;
+    if (sp.kind!=='ref') sp.pct=null;
+    drawSpots(); table();
+  });
+  tb.querySelectorAll('input.p').forEach(el=>el.onchange=e=>{
+    const v=parseFloat(e.target.value); S.spots[+e.target.dataset.i].pct = isNaN(v)?null:v;
+    drawSpots();
+  });
+}
+
+/* ---------- Miniaturen ---------- */
+function thumbs(){
+  const {W,H}=S;
+  put('#t0', ()=>{ const c=document.createElement('canvas'); const sc=Math.min(1,300/S.srcW);
+    c.width=S.srcW*sc; c.height=S.srcH*sc; c.getContext('2d').drawImage(S.src,0,0,c.width,c.height); return c; });
+  put('#t1', ()=>S.warpCv);
+  put('#t2', ()=>field(S.fit));
+  put('#t3', ()=>{ const m=threshMask(parseFloat($('#thr').value));
+    const c=document.createElement('canvas'); c.width=W;c.height=H;
+    const im=new ImageData(W,H);
+    for(let i=0;i<W*H;i++){ const v=m[i]?0:22, o=i*4;
+      im.data[o]=m[i]?159:v; im.data[o+1]=m[i]?232:v; im.data[o+2]=m[i]?112:v; im.data[o+3]=255; }
+    c.getContext('2d').putImageData(im,0,0); return c; });
+}
+function field(arr){
+  const {W,H}=S; let lo=1e9,hi=-1e9;
+  for(const v of arr){ if(v<lo)lo=v; if(v>hi)hi=v; }
+  const c=document.createElement('canvas'); c.width=W;c.height=H;
+  const im=new ImageData(W,H);
+  for(let i=0;i<W*H;i++){ const t=(arr[i]-lo)/(hi-lo||1)*255, o=i*4;
+    im.data[o]=t*0.55; im.data[o+1]=t*0.45; im.data[o+2]=t; im.data[o+3]=255; }
+  c.getContext('2d').putImageData(im,0,0); return c;
+}
+function put(sel, mk){
+  const dst=$(sel), src=mk(); const sc=Math.min(1, 300/src.width);
+  dst.width=Math.max(1,Math.round(src.width*sc)); dst.height=Math.max(1,Math.round(src.height*sc));
+  dst.getContext('2d').drawImage(src,0,0,dst.width,dst.height);
+}
+
+/* ---------- Regression und Ergebnis ---------- */
+$('#btnCalc').onclick = ()=>{
+  const refs = S.spots.filter(s=>s.kind==='ref' && s.pct!=null);
+  if (refs.length<2){ msg('m3','Mindestens zwei Referenzflecken mit Sollwert festlegen.'); return; }
+  const n=refs.length;
+  let sx=0,sy=0,sxx=0,sxy=0;
+  refs.forEach(r=>{ sx+=r.I; sy+=r.pct; sxx+=r.I*r.I; sxy+=r.I*r.pct; });
+  const den = n*sxx-sx*sx;
+  if (Math.abs(den)<1e-9){ msg('m3','Die Referenzen unterscheiden sich nicht genug im Integral.'); return; }
+  const a=(n*sxy-sx*sy)/den, b=(sy-a*sx)/n;
+  let ssTot=0, ssRes=0; const my=sy/n;
+  refs.forEach(r=>{ const p=a*r.I+b; ssRes+=(r.pct-p)**2; ssTot+=(r.pct-my)**2; });
+  const r2 = ssTot>0 ? 1-ssRes/ssTot : 1;
+  S.reg={a,b,r2,n};
+  S.spots.forEach(s=>{ s.res = s.kind==='off' ? null : a*s.I+b; });
+  msg('m3',''); table(); results();
+  $('#s4').hidden=false; $('#s4').scrollIntoView({behavior:'smooth',block:'start'});
+};
+function results(){
+  const samples = S.spots.filter(s=>s.kind==='sample' && s.res!=null);
+  const cards=$('#cards'); cards.innerHTML='';
+  samples.forEach(s=>{
+    const v=Math.round(s.res);
+    const cls = v<90 ? 'oos' : v>110 ? 'oos' : 'ok';
+    cards.insertAdjacentHTML('beforeend',
+      `<div class="card ${cls}"><div class="lab">Bahn ${s.id}</div><div class="val">${v}<small> %</small></div></div>`);
+  });
+  if (samples.length){
+    const mean = samples.reduce((a,s)=>a+s.res,0)/samples.length;
+    const sd = samples.length>1
+      ? Math.sqrt(samples.reduce((a,s)=>a+(s.res-mean)**2,0)/(samples.length-1)) : 0;
+    const rsd = mean ? sd/mean*100 : 0;
+    cards.insertAdjacentHTML('beforeend',
+      `<div class="card"><div class="lab">Mittel (n=${samples.length})</div><div class="val">${Math.round(mean)}<small> %</small></div></div>`);
+    const oos = Math.round(mean)<90 || Math.round(mean)>110;
+    $('#verdict').innerHTML = oos
+      ? `Mittelwert <b>${mean.toFixed(1)} %</b>, RSD ${rsd.toFixed(1)} % — außerhalb von 90–110 % der Deklaration. Probe für eine kompendiale Analyse vormerken.`
+      : `Mittelwert <b>${mean.toFixed(1)} %</b>, RSD ${rsd.toFixed(1)} % — innerhalb von 90–110 %. Die Publikation empfiehlt, den Mittelwert aus zwei Bestimmungen zu verwenden.`;
+  } else $('#verdict').textContent = 'Keine Probenflecken markiert.';
+  $('#stSlope').textContent = S.reg.a.toExponential(3);
+  $('#stItc').textContent = S.reg.b.toFixed(2);
+  $('#stR2').textContent = S.reg.r2.toFixed(4);
+  $('#stN').textContent = S.reg.n;
+  plot();
+}
+function plot(){
+  const pts = S.spots.filter(s=>s.kind!=='off' && s.res!=null);
+  const refs = pts.filter(s=>s.kind==='ref');
+  const xs=pts.map(p=>p.I), ys=pts.map(p=>p.res);
+  const x0=Math.min(...xs), x1=Math.max(...xs), y0=Math.min(...ys), y1=Math.max(...ys);
+  const px=v=>44+(v-x0)/((x1-x0)||1)*258, py=v=>178-(v-y0)/((y1-y0)||1)*156;
+  let g='';
+  for (let i=0;i<=3;i++){
+    const y=178-i*52, val=y0+(y1-y0)*i/3;
+    g+=`<line x1="44" y1="${y}" x2="302" y2="${y}" stroke="#2b303c"/>
+        <text x="38" y="${y+4}" fill="#8d95a5" font-size="9" font-family="ui-monospace,monospace" text-anchor="end">${val.toFixed(0)}</text>`;
+  }
+  g+=`<line x1="${px(x0)}" y1="${py(S.reg.a*x0+S.reg.b)}" x2="${px(x1)}" y2="${py(S.reg.a*x1+S.reg.b)}" stroke="#8b6cf6" stroke-width="1.5"/>`;
+  pts.forEach(p=>{
+    const c = p.kind==='ref' ? '#8b6cf6' : '#9fe870';
+    g+=`<circle cx="${px(p.I)}" cy="${py(p.res)}" r="4" fill="${c}"/>`;
+    if (p.kind==='ref') g+=`<circle cx="${px(p.I)}" cy="${py(p.pct)}" r="2" fill="none" stroke="#8b6cf6"/>`;
+  });
+  g+=`<text x="173" y="202" fill="#8d95a5" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle">Integral →</text>
+      <text x="12" y="100" fill="#8d95a5" font-size="9" font-family="ui-monospace,monospace" text-anchor="middle" transform="rotate(-90 12 100)">Gehalt %</text>`;
+  $('#plot').innerHTML = g;
+}
+
+/* ---------- Export ---------- */
+function dl(name, blob){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+}
+function stamp(){ return new Date().toISOString().replace(/[:.]/g,'-').slice(0,19); }
+$('#btnJson').onclick = ()=>{
+  const o = {
+    agentName: $('#name').value || 'unbenannt',
+    createdAt: new Date().toISOString(),
+    method: 'TLCyzer Web, Pipeline nach doi:10.1038/s41598-022-17527-y',
+    image: {width:S.W, height:S.H},
+    settings: {thresholdK:+$('#thr').value, minArea:+$('#minA').value, robustBackground:$('#robust').checked},
+    calibration: S.reg,
+    spots: S.spots.map(s=>({lane:s.id, role:s.kind, nominalPercent:s.pct,
+      x:+s.cx.toFixed(2), y:+s.cy.toFixed(2), radius:+s.r.toFixed(2),
+      integrationValue:+s.I.toFixed(4), percentage: s.res==null?null:+s.res.toFixed(4)}))
+  };
+  dl(`tlcyzer_${stamp()}.json`, new Blob([JSON.stringify(o,null,2)],{type:'application/json'}));
+};
+$('#btnCsv').onclick = ()=>{
+  const rows = [['Bahn','Rolle','Soll_%','Integral','x','y','r','Ergebnis_%']];
+  S.spots.forEach(s=>rows.push([s.id,s.kind,s.pct??'',s.I.toFixed(4),s.cx.toFixed(1),s.cy.toFixed(1),s.r.toFixed(1),s.res==null?'':s.res.toFixed(4)]));
+  dl(`tlcyzer_${stamp()}.csv`, new Blob([rows.map(r=>r.join(';')).join('\n')],{type:'text/csv'}));
+};
+$('#btnPng').onclick = ()=>S.warpCv.toBlob(b=>dl(`tlcyzer_${stamp()}.png`, b));
+
+/* ---------- Ablauf ---------- */
+$('#file').onchange = e=>loadFile(e.target.files[0]);
+$('#cam').onchange  = e=>loadFile(e.target.files[0]);
+$('#btnWarp').onclick = ()=>{
+  if (!warp()) return;
+  detect(); thumbs(); drawSpots(); table(); syncRadius();
+  $('#s3').hidden=false; $('#s4').hidden=true;
+  $('#s3').scrollIntoView({behavior:'smooth',block:'start'});
+};
+
+/* Offlinebetrieb, sofern über http(s) ausgeliefert */
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  window.addEventListener('load', ()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>

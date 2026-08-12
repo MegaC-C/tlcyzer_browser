@@ -1,0 +1,14 @@
+{
+  "name": "TLCyzer Web — quantitative DC-Auswertung",
+  "short_name": "TLCyzer",
+  "description": "Quantitative Auswertung von Dünnschichtchromatogrammen nach GPHF-Minilab, offline im Browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12141a",
+  "theme_color": "#12141a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
